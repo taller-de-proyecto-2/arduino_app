@@ -15,7 +15,7 @@
 #include <gpstracker.h>
 
 File file;
-int flag = 0, redirection = 0;
+int flag = 0, redirection = 0, numberOfNetworks = 0;
 int doneWithConfiguration;
 String latitude, longitude, timestamp, hours, minutes, seconds;
 
@@ -53,7 +53,7 @@ void setup() {
   /* Quitar los comentarios si se busca eliminar el archivo de
    *  configuración de redes al inicio de la aplicación.
   */
-  //(SPIFFS.exists("/wifiConfig.txt")) {
+  //if(SPIFFS.exists("/wifiConfig.txt")) {
   //  SPIFFS.remove("/wifiConfig.txt");
   //}
 
@@ -97,6 +97,8 @@ static void finite_state_machine(void) {
         doneWithConfiguration = saveConfiguration();
       } while (!doneWithConfiguration);
 
+      server.close();
+      
       Serial.println("Respuesta enviada al cliente.");
       
       if(redirection == 0) {
@@ -104,6 +106,7 @@ static void finite_state_machine(void) {
         Serial.println("Esperando la señal de inicio del muestro.");
       } else {
         state = NET_CONNECTING;
+        redirection = 0;
       }
     break;
     case WAITING:
@@ -144,9 +147,10 @@ static void finite_state_machine(void) {
 static void buildServer(void) {
   const char WiFiAPPSK[] = "123456789";
   WiFi.mode(WIFI_AP);
-
+  
   uint8_t mac[WL_MAC_ADDR_LENGTH];
   WiFi.softAPmacAddress(mac);
+  yield();
   String macID = String(mac[WL_MAC_ADDR_LENGTH - 2], HEX) +
                  String(mac[WL_MAC_ADDR_LENGTH - 1], HEX);
   macID.toUpperCase();
@@ -155,59 +159,64 @@ static void buildServer(void) {
   char AP_NameChar[AP_NameString.length() + 1];
   memset(AP_NameChar, 0, AP_NameString.length() + 1);
 
-  for (int i = 0; i < AP_NameString.length(); i++)
+  for (int i = 0; i < AP_NameString.length(); i++) {
     AP_NameChar[i] = AP_NameString.charAt(i);
+    yield();
+  }
 
   WiFi.softAP(AP_NameChar, WiFiAPPSK);
+  yield();
 }
 
 static int saveConfiguration(void) {
-  client = server.available();
-  if (!client) {
-    return 0;
+  WiFiClient APclient = server.available();
+  
+  while (!APclient) {
+    yield();
+    APclient = server.available();
   }
 
-  Serial.println("La IP estática del AP es: " + WiFi.softAPIP());
-
   // Lectura de la petición HTTP.
-  String req = client.readStringUntil('\r');
-  
+  String req = APclient.readStringUntil('\r');
+  yield();
+
   int ssidIndex = req.indexOf("ssid=");
   int passIndex = req.indexOf("password=");
   int httpIndex = req.indexOf("HTTP/");
-
+  yield();
   String networkSsid = req.substring(ssidIndex + 5, passIndex - 1);
   String networkPass = req.substring(passIndex + 9, httpIndex - 1);
+  yield();
 
-  // Generación de la respuesta HTTP a partir del header general.
   String s = "HTTP/1.1 200 OK\r\n";
   s += "Content-Type: text/html\r\n\r\n";
   s += "<!DOCTYPE HTML>\r\n<html>\r\n";
-
+  
   if((networkSsid != "") && (networkPass != "")) {
     s += "<body>Datos correctamente recibidos.</body>";
+    s += "</html>\n";
+    yield();
+    File wifiConfig = SPIFFS.open("/wifiConfig.txt", "a");
+    yield();
+    if(wifiConfig) {
+      wifiConfig.println(networkSsid);
+      yield();
+      wifiConfig.println(networkPass); 
+      yield();
+      wifiConfig.close();     
+    }
+    numberOfNetworks++;
+    APclient.print(s);
+    
+    return 1;
+  
   } else {
     s += "<body>Datos recibidos de forma incorrecta.</body>";
+    s += "</html>\n";
+    APclient.print(s);
+
+    return 0;
   }
-
-  s += "</html>\n";
-
-  // Envia la respuesta al cliente.
-  client.print(s);
-  delay(1);
-
-  File wifiConfig = SPIFFS.open("/wifiConfig.txt", "a");
-  wifiConfig.println(networkSsid);
-  wifiConfig.println(networkPass);
-  wifiConfig.close();
-
-  wifiConfig = SPIFFS.open("/wifiConfig.txt", "r");
-  while(wifiConfig.available()){
-    Serial.println(wifiConfig.readStringUntil('\n'));
-  }
-  wifiConfig.close();
-
-  return 1;
 }
 
 static void gpsSampling(void) {
@@ -215,18 +224,20 @@ static void gpsSampling(void) {
   float currentLatitude, currentLongitude;
   double difference = 0;
   file = SPIFFS.open("/gps_samples.txt", "w");
+  yield();
   while(!flag){
     currentLatitude = gps.location.lat();
     currentLongitude = gps.location.lng();
+    yield();
     difference = gps.distanceBetween(previousLatitude, previousLongitude, currentLatitude, currentLongitude);
     yield();
     Serial.println(difference);
-    // No se guardan las muestras que estén a menos de 5 metros de la última muestra guardada.
     if(difference > 5){
       previousLatitude = currentLatitude;
       previousLongitude = currentLongitude;
       file.println(currentLatitude, 6);
       file.println(currentLongitude, 6);
+      yield();
       hours = String(gps.time.hour());
       hours = ((hours.length() > 1) ? hours : ("0" + hours));
       minutes = String(gps.time.minute());
@@ -235,6 +246,7 @@ static void gpsSampling(void) {
       seconds = ((seconds.length() > 1) ? seconds : ("0" + seconds));
       yield();
       file.println(hours + minutes + seconds);
+      yield();
       Serial.println(hours + minutes + seconds);
     }
     smartDelay(1000);
@@ -250,19 +262,28 @@ static void gpsSampling(void) {
 
 static void connectionEstablishment(void) {
   File wifiConfig = SPIFFS.open("/wifiConfig.txt", "r");
+  yield();
   String ssid, pass;
-  int numberOfTries = 0, maxNumberOfTries = 20;
-    
+  int numberOfTries = 0, maxNumberOfTries = 20, index;
+
+  for(index = 0; index < (numberOfNetworks - 1); index++) {
+    yield();
+    ssid = wifiConfig.readStringUntil('\n');
+    pass = wifiConfig.readStringUntil('\n');
+  }
+  
   while(wifiConfig.available()){
     ssid = wifiConfig.readStringUntil('\n');
     pass = wifiConfig.readStringUntil('\n');
+    yield();
     char ssid_char_array[ssid.length()];
     char pass_char_array[pass.length()];
     ssid.toCharArray(ssid_char_array, ssid.length());
     pass.toCharArray(pass_char_array, pass.length());
+    yield();
     Serial.println(ssid_char_array);
     Serial.println(pass_char_array);
-
+    
     WiFi.mode(WIFI_STA);
     
     if (WiFi.status() != WL_CONNECTED){
@@ -288,26 +309,34 @@ static void connectionEstablishment(void) {
     redirection = 1;
   } else {
     Serial.println("Conectado.");  
-    Serial.println("IP address: ");
+    Serial.println("Dirección IP: ");
     Serial.println(WiFi.localIP());
   }
 }
 
 static void dataUpload(void) {
   file = SPIFFS.open("/gps_samples.txt", "r");
+  yield();
   while(file.available()){
     latitude = file.readStringUntil('\n');
     latitude.remove(latitude.length() - 1);
+    yield();
     longitude = file.readStringUntil('\n');
     longitude.remove(longitude.length() - 1);
+    yield();
     timestamp = file.readStringUntil('\n');
+    yield();
     String url = "/create_position.php?latitude=" + latitude + "&longitude=" + longitude + "&registered_at=" + timestamp;
     client.connect(host, httpPort);
+    yield();
     client.print(String("GET ") + url + " HTTP/1.1\r\n" + "Host: " + host + "\r\n" + "Connection: close\r\n\r\n");
+    yield();
   }
   if(file) {
     file.close();
     SPIFFS.remove("/gps_samples.txt");
+    yield();
+    numberOfNetworks = 0;
   }
 }
 
