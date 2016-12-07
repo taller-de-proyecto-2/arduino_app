@@ -1,11 +1,12 @@
 /*
  * Sistema de seguimiento GPS.
- * 
+ *
  * Cátedra de Taller de Proyecto II
  * UNLP - 2016
- * 
- * Archivo cabecera de piezo_deb.cpp
- * 
+ *
+ * Se realiza la eliminación de rebotes provenientes
+ * del sensor piezoeléctrico.
+ *
  * Autores:
  *  - Ailán, Julián
  *  - Hourquebie, Lucas
